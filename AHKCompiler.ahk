@@ -5,7 +5,7 @@
 ; AHKCompiler - Advanced Native AutoHotkey v2 Compiler
 ; -----------------------------------------------------------------------------
 
-Global AppVersion := "0.9"
+Global AppVersion := "0.91"
 Global BuildDir := A_ScriptDir "\AHKCompiler_build"
 Global AhkSrcDir := BuildDir "\AutoHotkey_L"
 Global PresetFile := BuildDir "\AHKCompiler_presets.ini"
@@ -83,17 +83,20 @@ MainGui.Add("Edit", "x125 y120 w200 vCopyright", "(c) 2026 My Custom Company")
 
 ; --- Tab 3: Obfuscation ---
 Tabs.UseTab(2)
-MainGui.Add("GroupBox", "x20 y40 w660 h60", "General Obfuscation")
-MainGui.Add("Checkbox", "x30 y60 vDelayLoad Checked", "Delay Load OS Imports (Clean IAT)")
-MainGui.Add("Checkbox", "x320 y60 vRemoveStrings Checked", "Scrub AHK Signature Strings")
+MainGui.Add("GroupBox", "x20 y40 w660 h65", "General Obfuscation")
+MainGui.Add("Checkbox", "x30 y55 vDelayLoad Checked", "Delay Load OS Imports (Clean IAT)")
+MainGui.Add("Checkbox", "x320 y55 vRemoveStrings Checked", "Scrub AHK Signature Strings")
+MainGui.Add("Checkbox", "x30 y78 vEncryptPayload", "Encrypt Target Script Payload (RC4)")
+MainGui.Add("Checkbox", "x320 y78 vCompressPayload", "Compress Target Script Payload (LZNT1)")
 
-MainGui.Add("GroupBox", "x20 y110 w230 h165", "1. Strict AHK Strip")
+MainGui.Add("GroupBox", "x20 y110 w230 h190", "1. Strict AHK Strip")
 MainGui.Add("Text", "x30 y130 w210 cGray", "Removes functions from scripts:")
-MainGui.Add("Checkbox", "x30 y150 w190 vStripProcess Checked", "Process (e.g. ProcessExist)")
-MainGui.Add("Checkbox", "x30 y175 vStripRun Checked", "Run (e.g. RunWait)")
-MainGui.Add("Checkbox", "x30 y200 vStripDllCall Checked", "DllCall (e.g. DllCall)")
-MainGui.Add("Checkbox", "x30 y225 w190 vStripRegistry Checked", "Registry (e.g. RegWrite)")
-MainGui.Add("Checkbox", "x30 y250 vStripNetwork Checked", "Network (e.g. Download)")
+MainGui.Add("Checkbox", "x30 y150 w190 vStripProcess", "Process (e.g. ProcessExist)")
+MainGui.Add("Checkbox", "x30 y175 vStripRun", "Run (e.g. RunWait)")
+MainGui.Add("Checkbox", "x30 y200 vStripDllCall", "DllCall (e.g. DllCall)")
+MainGui.Add("Checkbox", "x30 y225 w190 vStripRegistry", "Registry (e.g. RegWrite)")
+MainGui.Add("Checkbox", "x30 y250 vStripNetwork", "Network (e.g. Download)")
+MainGui.Add("Checkbox", "x30 y275 vCleanScript Checked", "Auto-Clean (Remove Comments)")
 
 MainGui.Add("GroupBox", "x260 y110 w420 h165", "2. Deep Win32 API Neuter (C++ Level)")
 MainGui.Add("Checkbox", "x275 y130 w240 vStripDangerous", "Enable Win32 Neutering (Breaks scripts!)").OnEvent("Click", ToggleNeuterUI)
@@ -128,9 +131,14 @@ MainGui.Add("Edit", "x345 y40 w220 vResPath", "")
 MainGui.Add("Button", "x575 y39 w60", "Browse").OnEvent("Click", SelectResourceFile)
 MainGui.Add("Button", "x640 y39 w40", "Add").OnEvent("Click", AddResource)
 
-Global ResList := MainGui.Add("ListView", "x25 y80 w655 h180 +Grid", ["Resource Name", "File Path"])
-ResList.ModifyCol(1, 150)
-ResList.ModifyCol(2, 480)
+MainGui.Add("Checkbox", "x125 y70 vResEncrypt", "Encrypt")
+MainGui.Add("Checkbox", "x200 y70 vResCompress", "Compress")
+
+Global ResList := MainGui.Add("ListView", "x25 y90 w655 h170 +Grid", ["Resource Name", "File Path", "Encrypt", "Compress"])
+ResList.ModifyCol(1, 120)
+ResList.ModifyCol(2, 380)
+ResList.ModifyCol(3, 60)
+ResList.ModifyCol(4, 75)
 MainGui.Add("Button", "x25 y265 w120", "Remove Selected").OnEvent("Click", RemoveResource)
 MainGui.Add("Button", "x155 y265 w100", "Clear All").OnEvent("Click", ClearResources)
 
@@ -211,7 +219,10 @@ AddToolTip("OptStringPool", "String Pooling. Forces all identical string literal
 
 AddToolTip("DelayLoad", "Obfuscates the executable's Import Address Table (IAT) by deferring all Win32 API DLL imports until runtime.`nEliminates ~300 static imports. Defeats static analysis. Note: Adds ~30KB structural data size.")
 AddToolTip("RemoveStrings", "Deep scrubs known AutoHotkey plaintext strings out of the C++ engine (e.g. error messages and URLs).`nDestroys basic string-matching AV detection rules.")
+AddToolTip("EncryptPayload", "Super lightweight RC4 payload encryption. Defeats string dumpers by encrypting the embedded AHK script.`nDecrypted into RAM during runtime.")
+AddToolTip("CompressPayload", "Lightweight NTFS payload compression wrapper (LZNT1 Non-UPX) that compresses the embedded script.`nDecompressed into RAM during runtime.")
 AddToolTip("StripDangerous", "Activates BOTH AHK Feature Stripping (left) and C++ Win32 API Neutering (right).`nThis handles everything below this toggle simultaneously.")
+AddToolTip("CleanScript", "Strips all AHK comments, empty lines, and indentation formatting before compiling.`nReduces script payload size without altering execution logic.")
 AddToolTip("DebugMode", "When a native Win32 API specified in the right TextBoxes is intercepted by Neutering,`nit injects a MessageBox popup explicitly alerting you to which internal C++ call failed.")
 
 AddToolTip("StripProcess", "AHK LEVEL: Unregisters Process commands (ProcessExist, ProcessWait,...).`nYour script will treat these as unknown functions. Extremely safe, never breaks native C++.")
@@ -262,13 +273,17 @@ SelectResourceFile(*) {
 AddResource(*) {
     rName := Trim(MainGui["ResName"].Value)
     rPath := Trim(MainGui["ResPath"].Value)
+    rEnc := MainGui["ResEncrypt"].Value
+    rCmp := MainGui["ResCompress"].Value
     if (rName = "" || rPath = "") {
         MsgBox("Both Resource Name and File Path are required.", "Error")
         return
     }
-    ResList.Add("", rName, rPath)
+    ResList.Add("", rName, rPath, (rEnc) ? "Yes" : "No", (rCmp) ? "Yes" : "No")
     MainGui["ResName"].Value := "CUSTOM_DATA"
     MainGui["ResPath"].Value := ""
+    MainGui["ResEncrypt"].Value := 0
+    MainGui["ResCompress"].Value := 0
 }
 
 SelectGitOverride(*) {
@@ -352,6 +367,8 @@ LoadPresetFromFile(iniFile, pName) {
 
         MainGui["DelayLoad"].Value := Integer(IniRead(iniFile, pName, "DelayLoad", 0))
         MainGui["RemoveStrings"].Value := Integer(IniRead(iniFile, pName, "RemoveStrings", 0))
+        MainGui["EncryptPayload"].Value := Integer(IniRead(iniFile, pName, "EncryptPayload", 0))
+        MainGui["CompressPayload"].Value := Integer(IniRead(iniFile, pName, "CompressPayload", 0))
         MainGui["StripDangerous"].Value := Integer(IniRead(iniFile, pName, "StripDangerous", 1))
         MainGui["DebugMode"].Value := Integer(IniRead(iniFile, pName, "DebugMode", 0))
 
@@ -360,6 +377,7 @@ LoadPresetFromFile(iniFile, pName) {
         MainGui["StripDllCall"].Value := Integer(IniRead(iniFile, pName, "StripDllCall", 1))
         MainGui["StripRegistry"].Value := Integer(IniRead(iniFile, pName, "StripRegistry", 1))
         MainGui["StripNetwork"].Value := Integer(IniRead(iniFile, pName, "StripNetwork", 1))
+        MainGui["CleanScript"].Value := Integer(IniRead(iniFile, pName, "CleanScript", 1))
 
         MainGui["NeuterProcess"].Value := IniRead(iniFile, pName, "NeuterProcess", "OpenProcess, VirtualAllocEx, VirtualProtectEx, WriteProcessMemory, ReadProcessMemory, CreateToolhelp32Snapshot, Process32FirstW, Process32NextW")
         MainGui["NeuterRun"].Value := IniRead(iniFile, pName, "NeuterRun", "ShellExecuteExW")
@@ -375,8 +393,10 @@ LoadPresetFromFile(iniFile, pName) {
         Loop rcount {
             rName := IniRead(iniFile, pName, "ResName" A_Index, "")
             rPath := IniRead(iniFile, pName, "ResPath" A_Index, "")
+            rEnc := IniRead(iniFile, pName, "ResEncrypt" A_Index, "0")
+            rCmp := IniRead(iniFile, pName, "ResCompress" A_Index, "0")
             if (rName != "" && rPath != "")
-                ResList.Add("", rName, rPath)
+                ResList.Add("", rName, rPath, (rEnc) ? "Yes" : "No", (rCmp) ? "Yes" : "No")
         }
 
         MainGui["OverrideGit"].Value := IniRead(iniFile, pName, "OverrideGit", "")
@@ -442,6 +462,8 @@ SaveConfigToIni(iniPath, pName, saved) {
 
     IniWrite(saved.DelayLoad, iniPath, pName, "DelayLoad")
     IniWrite(saved.RemoveStrings, iniPath, pName, "RemoveStrings")
+    IniWrite(saved.EncryptPayload, iniPath, pName, "EncryptPayload")
+    IniWrite(saved.CompressPayload, iniPath, pName, "CompressPayload")
     IniWrite(saved.StripDangerous, iniPath, pName, "StripDangerous")
     IniWrite(saved.DebugMode, iniPath, pName, "DebugMode")
 
@@ -450,6 +472,7 @@ SaveConfigToIni(iniPath, pName, saved) {
     IniWrite(saved.StripDllCall, iniPath, pName, "StripDllCall")
     IniWrite(saved.StripRegistry, iniPath, pName, "StripRegistry")
     IniWrite(saved.StripNetwork, iniPath, pName, "StripNetwork")
+    IniWrite(saved.CleanScript, iniPath, pName, "CleanScript")
 
     IniWrite(StrReplace(saved.NeuterProcess, "`n", ", "), iniPath, pName, "NeuterProcess")
     IniWrite(StrReplace(saved.NeuterRun, "`n", ", "), iniPath, pName, "NeuterRun")
@@ -468,6 +491,8 @@ SaveConfigToIni(iniPath, pName, saved) {
     Loop rcount {
         IniWrite(ResList.GetText(A_Index, 1), iniPath, pName, "ResName" A_Index)
         IniWrite(ResList.GetText(A_Index, 2), iniPath, pName, "ResPath" A_Index)
+        IniWrite((ResList.GetText(A_Index, 3) = "Yes") ? 1 : 0, iniPath, pName, "ResEncrypt" A_Index)
+        IniWrite((ResList.GetText(A_Index, 4) = "Yes") ? 1 : 0, iniPath, pName, "ResCompress" A_Index)
     }
 }
 
@@ -480,7 +505,12 @@ StartCompilation(*) {
 
     resArray := []
     Loop ResList.GetCount() {
-        resArray.Push({ Name: ResList.GetText(A_Index, 1), Path: ResList.GetText(A_Index, 2) })
+        resArray.Push({
+            Name: ResList.GetText(A_Index, 1),
+            Path: ResList.GetText(A_Index, 2),
+            Encrypt: (ResList.GetText(A_Index, 3) = "Yes") ? true : false,
+            Compress: (ResList.GetText(A_Index, 4) = "Yes") ? true : false
+        })
     }
     saved.Resources := resArray
 
@@ -904,6 +934,105 @@ EmbedScript(cfg) {
 
     bundledCode := ResolveIncludes(cfg.TargetScript)
 
+    if (cfg.HasOwnProp("CleanScript") && cfg.CleanScript) {
+        LogMsg("[*] Auto-Cleaning Script... (Stripping Comments, #Requires, and Whitespace)")
+        bundledCode := CleanAhkCode(bundledCode)
+    }
+
+    if (cfg.Resources.Length > 0) {
+        masterKey := ""
+        Loop 16
+            masterKey := masterKey Chr(Random(65, 90))
+
+        hasSpecialRes := false
+        mapLines := ""
+        for res in cfg.Resources {
+            if (res.Encrypt || res.Compress) {
+                hasSpecialRes := true
+                mapLines .= "            if (resName == `"" res.Name "`") {`n"
+                mapLines .= "                enc := " (res.Encrypt ? "true" : "false") "`n"
+                mapLines .= "                cmp := " (res.Compress ? "true" : "false") "`n"
+                mapLines .= "                return`n"
+                mapLines .= "            }`n"
+            }
+        }
+
+        if (hasSpecialRes) {
+            injectedHelper := "
+            (
+                class AutoResourceLoader {
+                    static Get(resName) {
+                        enc := false
+                        cmp := false
+                        this._GetState(resName, &enc, &cmp)
+                        
+                        hModule := DllCall("GetModuleHandle", "Ptr", 0, "Ptr")
+                        hResInfo := DllCall("FindResource", "Ptr", hModule, "Str", resName, "Ptr", 10, "Ptr")
+                        if !hResInfo
+                            throw Error("Resource not found: " resName)
+                        resSize := DllCall("SizeofResource", "Ptr", hModule, "Ptr", hResInfo, "UInt")
+                        hResData := DllCall("LoadResource", "Ptr", hModule, "Ptr", hResInfo, "Ptr")
+                        pResData := DllCall("LockResource", "Ptr", hResData, "Ptr")
+                
+                        buf := Buffer(resSize)
+                        DllCall("RtlMoveMemory", "Ptr", buf.Ptr, "Ptr", pResData, "UPtr", resSize)
+                        
+                        if (cmp) {
+                            uncompressedSize := NumGet(buf, 0, "UInt")
+                            workspaceSize := 0
+                            fragmentSize := 0
+                            DllCall("ntdll\RtlGetCompressionWorkSpaceSize", "UShort", 2, "UInt*", &workspaceSize, "UInt*", &fragmentSize, "UInt")
+                            workspace := Buffer(workspaceSize)
+                            
+                            newBuf := Buffer(uncompressedSize)
+                            finalSize := 0
+                            DllCall("ntdll\RtlDecompressBuffer", "UShort", 0x102, "Ptr", newBuf.Ptr, "UInt", uncompressedSize, "Ptr", buf.Ptr + 4, "UInt", resSize - 4, "UInt*", &finalSize)
+                            buf := newBuf
+                        }
+                        
+                        if (enc) {
+                            s := Buffer(256)
+                            key := "`"" masterKey "`""
+                            Loop 256
+                                NumPut("UChar", A_Index - 1, s, A_Index - 1)
+                            j := 0
+                            keyLen := StrLen(key)
+                            Loop 256 {
+                                i := A_Index - 1
+                                j := (j + NumGet(s, i, "UChar") + Ord(SubStr(key, Mod(i, keyLen) + 1, 1))) & 255
+                                temp := NumGet(s, i, "UChar")
+                                NumPut("UChar", NumGet(s, j, "UChar"), s, i)
+                                NumPut("UChar", temp, s, j)
+                            }
+                            i := 0
+                            j := 0
+                            bufSize := buf.Size
+                            Loop bufSize {
+                                i := (i + 1) & 255
+                                j := (j + NumGet(s, i, "UChar")) & 255
+                                temp := NumGet(s, i, "UChar")
+                                NumPut("UChar", NumGet(s, j, "UChar"), s, i)
+                                NumPut("UChar", temp, s, j)
+                                idx := (NumGet(s, i, "UChar") + NumGet(s, j, "UChar")) & 255
+                                k := NumGet(s, idx, "UChar")
+                                offset := A_Index - 1
+                                NumPut("UChar", NumGet(buf, offset, "UChar") ^ k, buf, offset)
+                            }
+                        }
+                        
+                        return buf
+                    }
+                    
+                    static _GetState(resName, &enc, &cmp) {
+                " mapLines "
+                    }
+                }
+            )"
+            bundledCode := injectedHelper "`r`n`r`n" bundledCode
+            cfg.MasterKey := masterKey
+        }
+    }
+
     rcTarget := AhkSrcDir "\source\resources\res_AutoHotkeySC.rc"
     if !FileExist(rcTarget)
         rcTarget := AhkSrcDir "\source\resources\AutoHotkey.rc"
@@ -912,7 +1041,55 @@ EmbedScript(cfg) {
 
     SplitPath(rcTarget, , &rcDir)
     destScript := rcDir "\nano_script.ahk"
-    SaveFile(destScript, bundledCode)
+
+    if (cfg.EncryptPayload || cfg.CompressPayload) {
+        binaryBuf := Buffer(StrPut(bundledCode, "UTF-8") - 1)
+        StrPut(bundledCode, binaryBuf, "UTF-8")
+
+        LogMsg("[*] Processing Payload...")
+        keyStr := ""
+        if (cfg.EncryptPayload) {
+            Loop 16
+                keyStr .= Chr(Random(65, 90))
+            EncryptRC4(binaryBuf, keyStr)
+            LogMsg("    -> Encrypted via RC4 in-memory.")
+        }
+
+        if (cfg.CompressPayload) {
+            compressedSize := 0
+            CompressLZNT1(binaryBuf, &compressedBuf, &compressedSize)
+            binaryBuf := compressedBuf
+            LogMsg("    -> Compressed via LZNT1 in-memory.")
+        }
+
+        fileObj := FileOpen(destScript, "w-")
+        fileObj.RawWrite(binaryBuf, binaryBuf.Size)
+        fileObj.Close()
+
+        LogMsg("[*] Injecting native decryption routines into C++ Engine...")
+        scriptCpp := AhkSrcDir "\source\script.cpp"
+        if FileExist(scriptCpp) {
+            cppText := FileRead(scriptCpp, "UTF-8")
+
+            cppInject := "`r`n    // --- START NATIVE PAYLOAD DECRYPT ---`r`n"
+            if (cfg.CompressPayload) {
+                cppInject .= "    typedef long (__stdcall *RtlDecompressBuffer_t)(unsigned short, unsigned char*, unsigned long, unsigned char*, unsigned long, unsigned long*);`r`n    HMODULE hNtdll = GetModuleHandle(TEXT(`"ntdll.dll`"));`r`n    RtlDecompressBuffer_t __RtlDecompressBuffer = (RtlDecompressBuffer_t)GetProcAddress(hNtdll, `"RtlDecompressBuffer`");`r`n`r`n    unsigned long uncompressedSize = *(unsigned long*)((LPBYTE)textbuf.mBuffer);`r`n    LPBYTE pCompressed = ((LPBYTE)textbuf.mBuffer) + 4;`r`n    unsigned long compressedSize = (unsigned long)textbuf.mLength - 4;`r`n`r`n    LPBYTE newBuf = (LPBYTE)malloc(uncompressedSize);`r`n    unsigned long finalSize = 0;`r`n    if (__RtlDecompressBuffer) __RtlDecompressBuffer(2 | 0x100, newBuf, uncompressedSize, pCompressed, compressedSize, &finalSize);`r`n    textbuf.mBuffer = newBuf;`r`n    textbuf.mLength = finalSize;`r`n"
+            }
+            if (cfg.EncryptPayload) {
+                cppInject .= "    unsigned char S[256];`r`n    for (int i = 0; i < 256; i++) S[i] = i;`r`n    int j = 0;`r`n    const unsigned char key[] = `"" keyStr "`";`r`n    size_t keyLen = " StrLen(keyStr) ";`r`n    for (int i = 0; i < 256; i++) {`r`n        j = (j + S[i] + key[i `% keyLen]) `% 256;`r`n        unsigned char t = S[i]; S[i] = S[j]; S[j] = t;`r`n    }`r`n`r`n"
+                if (!cfg.CompressPayload) {
+                    cppInject .= "    LPBYTE newBufEnc = (LPBYTE)malloc(textbuf.mLength);`r`n    memcpy(newBufEnc, textbuf.mBuffer, textbuf.mLength);`r`n    textbuf.mBuffer = newBufEnc;`r`n"
+                }
+                cppInject .= "    int i = 0; j = 0;`r`n    LPBYTE data = (LPBYTE)textbuf.mBuffer;`r`n    size_t dataLen = textbuf.mLength;`r`n    for (size_t k = 0; k < dataLen; k++) {`r`n        i = (i + 1) `% 256;`r`n        j = (j + S[i]) `% 256;`r`n        unsigned char t = S[i]; S[i] = S[j]; S[j] = t;`r`n        data[k] ^= S[(S[i] + S[j]) `% 256];`r`n    }`r`n"
+            }
+            cppInject .= "    // --- END NATIVE PAYLOAD DECRYPT ---`r`n`r`n"
+
+            cppText := StrReplace(cppText, "// NOTE: Ahk2Exe strips off the UTF-8 BOM.", cppInject "    // NOTE: Ahk2Exe strips off the UTF-8 BOM.")
+            SaveFile(scriptCpp, cppText)
+        }
+    } else {
+        SaveFile(destScript, bundledCode)
+    }
 
     content := FileRead(rcTarget, "UTF-8")
     content := StrReplace(content, "`r`n`">AUTOHOTKEY SCRIPT<`" RCDATA `"nano_script.ahk`"`r`n", "")
@@ -925,6 +1102,30 @@ EmbedScript(cfg) {
     injection := "`r`n; --- CUSTOM RESOURCES ---`r`n1 RCDATA `"nano_script.ahk`"`r`n"
     for res in cfg.Resources {
         resPath := StrReplace(res.Path, "\", "\\")
+
+        if (res.Encrypt || res.Compress) {
+            LogMsg("    -> Ext-Resource '" res.Name "' encoding pass...")
+            rObj := FileOpen(res.Path, "r-d")
+            rBuf := Buffer(rObj.Length)
+            rObj.RawRead(rBuf, rBuf.Size)
+            rObj.Close()
+
+            if (res.Encrypt) {
+                EncryptRC4(rBuf, cfg.MasterKey)
+            }
+            if (res.Compress) {
+                compressedSize := 0
+                CompressLZNT1(rBuf, &cBuf, &compressedSize)
+                rBuf := cBuf
+            }
+
+            binPath := rcDir "\temp_res_" A_Index ".bin"
+            wObj := FileOpen(binPath, "w-")
+            wObj.RawWrite(rBuf, rBuf.Size)
+            wObj.Close()
+            resPath := StrReplace(binPath, "\", "\\")
+        }
+
         injection .= res.Name " RCDATA `"" resPath "`"`r`n"
     }
     content .= injection
@@ -1174,6 +1375,8 @@ HeadlessBuild(pName) {
 
         cfg.DelayLoad := Integer(IniRead(cfgFile, cfgSect, "DelayLoad", 0))
         cfg.RemoveStrings := Integer(IniRead(cfgFile, cfgSect, "RemoveStrings", 0))
+        cfg.EncryptPayload := Integer(IniRead(cfgFile, cfgSect, "EncryptPayload", 0))
+        cfg.CompressPayload := Integer(IniRead(cfgFile, cfgSect, "CompressPayload", 0))
         cfg.StripDangerous := Integer(IniRead(cfgFile, cfgSect, "StripDangerous", 1))
         cfg.DebugMode := Integer(IniRead(cfgFile, cfgSect, "DebugMode", 0))
 
@@ -1182,6 +1385,7 @@ HeadlessBuild(pName) {
         cfg.StripDllCall := Integer(IniRead(cfgFile, cfgSect, "StripDllCall", 1))
         cfg.StripRegistry := Integer(IniRead(cfgFile, cfgSect, "StripRegistry", 1))
         cfg.StripNetwork := Integer(IniRead(cfgFile, cfgSect, "StripNetwork", 1))
+        cfg.CleanScript := Integer(IniRead(cfgFile, cfgSect, "CleanScript", 1))
 
         cfg.NeuterProcess := IniRead(cfgFile, cfgSect, "NeuterProcess", "OpenProcess, VirtualAllocEx, VirtualProtectEx, WriteProcessMemory, ReadProcessMemory, CreateToolhelp32Snapshot, Process32FirstW, Process32NextW")
         cfg.NeuterRun := IniRead(cfgFile, cfgSect, "NeuterRun", "ShellExecuteExW")
@@ -1200,8 +1404,10 @@ HeadlessBuild(pName) {
         Loop rcount {
             rName := IniRead(cfgFile, cfgSect, "ResName" A_Index, "")
             rPath := IniRead(cfgFile, cfgSect, "ResPath" A_Index, "")
+            rEnc := IniRead(cfgFile, cfgSect, "ResEncrypt" A_Index, "0")
+            rCmp := IniRead(cfgFile, cfgSect, "ResCompress" A_Index, "0")
             if (rName != "" && rPath != "")
-                cfg.Resources.Push({ Name: rName, Path: rPath })
+                cfg.Resources.Push({ Name: rName, Path: rPath, Encrypt: (rEnc ? true : false), Compress: (rCmp ? true : false) })
         }
 
         if (cfg.TargetScript = "" || !FileExist(cfg.TargetScript)) {
@@ -1213,4 +1419,120 @@ HeadlessBuild(pName) {
     } catch Error as err {
         try FileAppend("[!] Failed to decode preset '" pName "'. Error: " err.Message "`n", "*")
     }
+}
+
+/*
+lol
+*/
+
+EncryptRC4(buf, key) {
+    s := Buffer(256)
+    Loop 256
+        NumPut("UChar", A_Index - 1, s, A_Index - 1)
+
+    j := 0
+    keyLen := StrLen(key)
+    Loop 256 {
+        i := A_Index - 1
+        j := (j + NumGet(s, i, "UChar") + Ord(SubStr(key, Mod(i, keyLen) + 1, 1))) & 255
+        temp := NumGet(s, i, "UChar")
+        NumPut("UChar", NumGet(s, j, "UChar"), s, i)
+        NumPut("UChar", temp, s, j)
+    }
+
+    i := 0
+    j := 0
+    bufSize := buf.Size
+    Loop bufSize {
+        i := (i + 1) & 255
+        j := (j + NumGet(s, i, "UChar")) & 255
+        temp := NumGet(s, i, "UChar")
+        NumPut("UChar", NumGet(s, j, "UChar"), s, i)
+        NumPut("UChar", temp, s, j)
+
+        idx := (NumGet(s, i, "UChar") + NumGet(s, j, "UChar")) & 255
+        k := NumGet(s, idx, "UChar")
+
+        offset := A_Index - 1
+        NumPut("UChar", NumGet(buf, offset, "UChar") ^ k, buf, offset)
+    }
+}
+
+CompressLZNT1(uncompressedBuf, &outBuf, &compressedSizeOutput) {
+    uncompressedSize := uncompressedBuf.Size
+    workspaceSize := 0
+    fragmentSize := 0
+    DllCall("ntdll\RtlGetCompressionWorkSpaceSize", "UShort", 2, "UInt*", &workspaceSize, "UInt*", &fragmentSize, "UInt")
+
+    workspace := Buffer(workspaceSize)
+    compressedSizeTemp := uncompressedSize + 4096
+    compressedTemp := Buffer(compressedSizeTemp)
+    finalSize := 0
+
+    DllCall("ntdll\RtlCompressBuffer", "UShort", 0x102, "Ptr", uncompressedBuf, "UInt", uncompressedSize, "Ptr", compressedTemp, "UInt", compressedSizeTemp, "UInt", 4096, "UInt*", &finalSize, "Ptr", workspace, "UInt")
+
+    compressedSizeOutput := finalSize + 4
+    outBuf := Buffer(compressedSizeOutput)
+    NumPut("UInt", uncompressedSize, outBuf, 0)
+    DllCall("RtlMoveMemory", "Ptr", outBuf.Ptr + 4, "Ptr", compressedTemp.Ptr, "UPtr", finalSize)
+}
+
+CleanAhkCode(code) {
+    code := RegExReplace(code, "s)/\*.*?\*/", "")
+
+    outLines := []
+    lines := StrSplit(code, "`n", "`r")
+    for line in lines {
+        line := Trim(line, " `t")
+        if (line = "")
+            continue
+
+        if (RegExMatch(line, "i)^#Requires"))
+            continue
+
+        inQuote := ""
+        commentPos := 0
+        escape := false
+
+        lineLen := StrLen(line)
+        loop lineLen {
+            c := SubStr(line, A_Index, 1)
+
+            if escape {
+                escape := false
+                continue
+            }
+            if c == "``" {
+                escape := true
+                continue
+            }
+
+            if (inQuote == "") {
+                if (c == "`"" || c == "'") {
+                    inQuote := c
+                } else if (c == ";") {
+                    if (A_Index == 1 || SubStr(line, A_Index - 1, 1) ~= "[ `t]") {
+                        commentPos := A_Index
+                        break
+                    }
+                }
+            } else {
+                if c == inQuote {
+                    inQuote := ""
+                }
+            }
+        }
+
+        if (commentPos > 0)
+            line := Trim(SubStr(line, 1, commentPos - 1), " `t")
+
+        if (line != "")
+            outLines.Push(line)
+    }
+
+    finalCode := ""
+    for L in outLines
+        finalCode .= L "`r`n"
+
+    return finalCode
 }
