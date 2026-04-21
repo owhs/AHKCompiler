@@ -9,6 +9,7 @@ Global AppVersion := "0.92"
 Global BuildDir := A_ScriptDir "\AHKCompiler_build"
 Global AhkSrcDir := BuildDir "\AutoHotkey_L"
 Global PresetFile := BuildDir "\AHKCompiler_presets.ini"
+Global GlobalIni := A_ScriptDir "\AHKCompiler.ini"
 Global IsHeadless := false
 
 Global SIMULATE_NO_GIT := false
@@ -161,9 +162,10 @@ MainGui.Add("Text", "x30 y153 w120", "Override MSBuild:")
 MainGui.Add("Edit", "x140 y148 w440 vOverrideMsvc", "")
 MainGui.Add("Button", "x590 y147 w60", "Browse").OnEvent("Click", SelectMsvcOverride)
 
-MainGui.Add("GroupBox", "x20 y195 w420 h75", "Developer / Testing Options")
+MainGui.Add("GroupBox", "x20 y195 w420 h100", "Developer / Testing Options")
 MainGui.Add("Checkbox", "x30 y215 vSimNoGit " (SIMULATE_NO_GIT ? "Checked" : ""), "Simulate Git Not Installed...")
 MainGui.Add("Checkbox", "x30 y240 vSimNoMSVC " (SIMULATE_NO_MSVC ? "Checked" : ""), "Simulate MSVC Not Installed...")
+MainGui.Add("Checkbox", "x30 y265 vOverrideTheme", "Debug: Override Background Color (Dark Theme)").OnEvent("Click", ToggleThemeOverrides)
 
 MainGui.Add("Button", "x460 y210 w200 h40", "Refresh Environment Status").OnEvent("Click", (*) => CheckEnvironmentStatusUi())
 
@@ -186,6 +188,23 @@ ToggleNeuterUI()
 try
     CheckEnv({ SimNoMSVC: SIMULATE_NO_MSVC })
 
+ToggleThemeOverrides(*) {
+    saved := MainGui.Submit(false)
+    IniWrite(saved.OverrideTheme ? "1" : "0", GlobalIni, "Settings", "OverrideTheme")
+    if (saved.OverrideTheme) {
+        MainGui.BackColor := "191919"
+        ; Optional: force text controls to white? Not unless needed
+    } else {
+        MainGui.BackColor := "ffffff"
+    }
+}
+
+try {
+    MainGui["OverrideTheme"].Value := Integer(IniRead(GlobalIni, "Settings", "OverrideTheme", 0))
+} catch {
+    ; Default check off
+}
+ToggleThemeOverrides()
 MainGui.Show()
 
 ; -----------------------------------------------------------------------------
@@ -392,6 +411,7 @@ LoadPresetFromFile(iniFile, pName) {
         MainGui["IconFiletype"].Value := IniRead(iniFile, pName, "IconFiletype", "")
 
         ResList.Delete()
+
         rcount := Integer(IniRead(iniFile, pName, "ResourceCount", 0))
         Loop rcount {
             rName := IniRead(iniFile, pName, "ResName" A_Index, "")
