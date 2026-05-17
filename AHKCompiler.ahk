@@ -1365,7 +1365,7 @@ ScrubFile(filePath) {
         SaveFile(filePath, content)
 }
 
-ResolveIncludes(filePath, fileInstalls := 0, visited := "") {
+ResolveIncludes(filePath, visited := "") {
     if !visited
         visited := Map()
 
@@ -1406,33 +1406,12 @@ ResolveIncludes(filePath, fileInstalls := 0, visited := "") {
 
             if (targetPath != "" && FileExist(targetPath)) {
                 outLines .= "; --- Start #Include " incTarget " ---`r`n"
-                outLines .= ResolveIncludes(targetPath, fileInstalls, visited) "`r`n"
+                outLines .= ResolveIncludes(targetPath, visited) "`r`n"
                 outLines .= "; --- End #Include " incTarget " ---`r`n"
             } else {
                 outLines .= line "`r`n"
             }
         } else {
-            if (IsObject(fileInstalls) && RegExMatch(line, "i)\bFileInstall\s*\(?\s*[`"']([^`"']+)[`"']", &fm)) {
-                sourceStr := fm[1]
-                if RegExMatch(sourceStr, "^[a-zA-Z]:\\|^\\\\") {
-                    fullPath := sourceStr
-                } else {
-                    fullPath := fDir "\" sourceStr
-                }
-                if FileExist(fullPath) {
-                    resName := StrUpper(sourceStr)
-                    isDuplicate := false
-                    for existingRes in fileInstalls {
-                        if (existingRes.Name == resName) {
-                            isDuplicate := true
-                            break
-                        }
-                    }
-                    if (!isDuplicate) {
-                        fileInstalls.Push({Name: resName, Path: fullPath, Encrypt: false, Compress: false})
-                    }
-                }
-            }
             outLines .= line "`r`n"
         }
     }
@@ -1442,11 +1421,39 @@ ResolveIncludes(filePath, fileInstalls := 0, visited := "") {
 EmbedScript(cfg) {
     LogMsg("[*] Resolving #Includes and injecting script at C++ Resource Level...")
 
-    bundledCode := ResolveIncludes(cfg.TargetScript, cfg.Resources)
+    bundledCode := ResolveIncludes(cfg.TargetScript)
 
     if (cfg.HasOwnProp("CleanScript") && cfg.CleanScript) {
         LogMsg("[*] Auto-Cleaning Script... (Stripping Comments, #Requires, and Whitespace)")
         bundledCode := CleanAhkCode(bundledCode)
+    }
+
+    SplitPath(cfg.TargetScript, , &mainDir)
+    searchCode := (cfg.HasOwnProp("CleanScript") && cfg.CleanScript) ? bundledCode : CleanAhkCode(bundledCode)
+    pos := 1
+    while pos := RegExMatch(searchCode, "i)\bFileInstall\s*\(?\s*([\x22\x27])(.*?)\1", &m, pos) {
+        sourceStr := m[2]
+        absSource := sourceStr
+        if !RegExMatch(absSource, "^[a-zA-Z]:\\|^\\\\") {
+            absSource := mainDir "\" absSource
+        }
+        resName := StrUpper(sourceStr)
+        exists := false
+        for res in cfg.Resources {
+            if res.Name == resName {
+                exists := true
+                break
+            }
+        }
+        if !exists {
+            if FileExist(absSource) {
+                cfg.Resources.Push({ Name: resName, Path: absSource, Encrypt: false, Compress: false })
+                LogMsg("    -> Auto-detected FileInstall: " sourceStr)
+            } else {
+                LogMsg("[!] Warning: FileInstall source not found: " absSource)
+            }
+        }
+        pos += m.Len[0]
     }
 
     if (cfg.Resources.Length > 0) {
@@ -1636,7 +1643,8 @@ EmbedScript(cfg) {
             resPath := StrReplace(binPath, "\", "\\")
         }
 
-        injection .= res.Name " RCDATA `"" resPath "`"`r`n"
+        safeResName := RegExMatch(res.Name, 'i)^".*"$') ? res.Name : '"' res.Name '"'
+        injection .= safeResName " RCDATA `"" resPath "`"`r`n"
     }
     content .= injection
 
