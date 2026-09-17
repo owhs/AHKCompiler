@@ -1,0 +1,872 @@
+diff --git a/source/Debugger.cpp b/source/Debugger.cpp
+index c0e86e4..4566a40 100644
+--- a/source/Debugger.cpp
++++ b/source/Debugger.cpp
+@@ -3130,9 +3130,11 @@ LPTSTR Var::ObjectToText(LPTSTR aName, LPTSTR aBuf, int aBufSize)
+ {
+ 	LPTSTR aBuf_orig = aBuf;
+ 	aBuf += sntprintf(aBuf, aBufSize, _T("%s: %s object"), aName, mObject->Type());
++#ifdef CONFIG_COM
+ 	if (ComObject *cobj = dynamic_cast<ComObject *>(mObject))
+ 		aBuf += sntprintf(aBuf, BUF_SPACE_REMAINING, _T(" {wrapper: 0x%IX, vt: 0x%04hX, value: 0x%I64X}"), cobj, cobj->mVarType, cobj->mVal64);
+ 	else
++#endif
+ 		aBuf += sntprintf(aBuf, BUF_SPACE_REMAINING, _T(" {address: 0x%IX}"), mObject);
+ 	return aBuf;
+ }
+diff --git a/source/application.cpp b/source/application.cpp
+index b04c5e9..3dc991f 100644
+--- a/source/application.cpp
++++ b/source/application.cpp
+@@ -193,7 +193,9 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
+ 	bool empty_the_queue_via_peek = false;
+ 	int messages_received = 0; // This is used to ensure we Sleep() at least a minimal amount if no messages are received.
+ 
++#ifdef CONFIG_GUI
+ 	bool msg_was_handled;
++#endif
+ 	HWND fore_window, focused_control, criterion_found_hwnd;
+ 	TCHAR wnd_class_name[32];
+ 	UserMenuItem *menu_item;
+@@ -204,6 +206,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
+ 	int priority;
+ 	Hotstring *hs;
+ 	GuiType *pgui; // This is just a temp variable and should not be referred to once the below has been determined.
++#ifdef CONFIG_GUI
+ 	GuiControlType *pcontrol, *ptab_control;
+ 	GuiIndexType gui_control_index;
+ 	GuiEventType gui_action;
+@@ -216,6 +219,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
+ 	ExprTokenType gui_event_args[6]; // Current maximum number of arguments for Gui event handlers.
+ 	int gui_event_arg_count;
+ 	POINT gui_point;
++#endif
+ 	HDROP hdrop_to_free;
+ 	input_type *input_hook;
+ 	LRESULT msg_reply;
+@@ -461,6 +465,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
+ 		// range messages below already checked msg.hwnd to ensure it is one of our messages.
+ 		// UPDATE: Mouse messages must also be passed through IsDialogMessage() so that clicking
+ 		// a Button will temporarily apply the BS_DEFPUSHBUTTON style.
++#ifdef CONFIG_GUI
+ 		if (g_firstGui // Checked first to help performance, since all messages must come through this bottleneck.
+ 			&& (msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST
+ 				|| msg.message >= WM_MOUSEFIRST && msg.message <= WM_MOUSELAST)
+@@ -600,6 +605,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
+ 					continue; // Continue with the main message loop.
+ 			}
+ 		} // if (keyboard or mouse message posted to GUI)
++#endif // CONFIG_GUI
+ 
+ 		// v1.0.44: There's no reason to call TRANSLATE_AHK_MSG here because all WM_COMMNOTIFY messages
+ 		// are sent to g_hWnd. Thus, our call to DispatchMessage() later below will route such messages to
+@@ -633,6 +639,9 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
+ 			switch(msg.message)
+ 			{
+ 			case AHK_GUI_ACTION: // Listed first for performance.
++#ifndef CONFIG_GUI
++				goto break_out_of_main_switch; // No Gui support: must be some other window's WM_USER message, so dispatch it.
++#else
+ 				// Assume that it is possible that this message's GUI window has been destroyed
+ 				// (and maybe even recreated) since the time the msg was posted.  If this can happen,
+ 				// that's another reason for finding which GUI this control is associate with (it also
+@@ -718,8 +727,12 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
+ 				}
+ 				priority = 0;  // Always use default for now.
+ 				break; // case AHK_GUI_ACTION
++#endif // CONFIG_GUI
+ 
+ 			case AHK_USER_MENU: // user-defined menu item
++#ifndef CONFIG_GUI
++				pgui = NULL; // No Gui menu bars without Gui support.
++#else
+ 				if (msg.wParam) // Poster specified that this menu item was from a gui's menu bar (since wParam is unsigned, any incoming -1 is seen as greater than max).
+ 				{
+ 					// The menu type is passed with the message so that its value will be in sync with
+@@ -733,6 +746,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
+ 				}
+ 				else
+ 					pgui = NULL; // Set for use in later sections.
++#endif
+ 				if (   !(menu_item = g_script.FindMenuItemByID((UINT)msg.lParam))   ) // Item not found.
+ 					continue; // ignore the msg
+ 				// And just in case a menu item that lacks a label (such as a separator) is ever
+@@ -1011,6 +1025,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
+ 
+ 			switch (msg.message)
+ 			{
++#ifdef CONFIG_GUI
+ 			case AHK_GUI_ACTION: // Listed first for performance.
+ 			{
+ #define EVT_ARG_ADD(_value) gui_event_args[gui_event_arg_count++].SetValue(_value)
+@@ -1211,6 +1226,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
+ 				pgui->Release();
+ 				break;
+ 			} // case AHK_GUI_ACTION
++#endif // CONFIG_GUI
+ 
+ 			case AHK_USER_MENU: // user-defined menu item
+ 			{
+diff --git a/source/config.h b/source/config.h
+index ad38d9c..d2878f5 100644
+--- a/source/config.h
++++ b/source/config.h
+@@ -7,12 +7,57 @@
+ #endif
+ 
+ #ifdef _MSC_VER
+-	#if defined(WIN32_PLATFORM) || defined(_WIN64)
++	#if (defined(WIN32_PLATFORM) || defined(_WIN64)) && !defined(NO_DLLCALL)
+ 	#define ENABLE_DLLCALL
+ 	#define ENABLE_REGISTERCALLBACK
+ 	#endif
+ #endif
+ 
++// Optional features.  Each is enabled unless NO_<feature> is defined, which is how
++// builder\build.ps1 strips features (see builder\features.ini).
++#if !defined(NO_COM) || defined(CONFIG_DLL) // The DLL build exposes scripts via COM.
++#define CONFIG_COM
++#endif
++#ifndef NO_GUI
++#define CONFIG_GUI
++// Component-level: the ListView / TreeView / StatusBar scripting methods.
++// (Their weight is modest - most GUI code is the shared window framework in
++// script_gui.cpp - but this shows how a component can be split from the frame.)
++#if !defined(NO_GUI_ADV)
++#define CONFIG_GUI_ADV
++#endif
++// The ActiveX control needs COM (its wrapper lives in script_com.cpp).  It can be
++// dropped on its own (NO_GUI_ACTIVEX) while keeping the rest of COM, and is dropped
++// automatically whenever COM is absent.
++#if defined(CONFIG_COM) && !defined(NO_GUI_ACTIVEX)
++#define CONFIG_GUI_ACTIVEX
++#endif
++#endif
++#ifndef NO_REGEX
++#define CONFIG_REGEX
++#endif
++#ifndef NO_REGISTRY
++#define CONFIG_REGISTRY
++#endif
++#ifndef NO_DRIVE
++#define CONFIG_DRIVE
++#endif
++#ifndef NO_SOUND
++#define CONFIG_SOUND
++#endif
++#ifndef NO_IMAGE
++#define CONFIG_IMAGE
++#endif
++#ifndef NO_NETWORK
++#define CONFIG_NETWORK
++#endif
++#ifndef NO_PROCESS
++#define CONFIG_PROCESS
++#endif
++#ifndef NO_RUN
++#define CONFIG_RUN
++#endif
++
+ #if !defined(_MBCS) && !defined(_UNICODE) && !defined(UNICODE) // If not set in project settings...
+ 
+ // L: Comment out the next line to enable UNICODE:
+@@ -24,7 +69,7 @@
+ #endif
+ #endif
+ 
+-#ifndef AUTOHOTKEYSC
++#if !defined(AUTOHOTKEYSC) && !defined(NO_DEBUGGER)
+ // DBGp
+ #define CONFIG_DEBUGGER
+ #endif
+diff --git a/source/lib/Gui.ListView.cpp b/source/lib/Gui.ListView.cpp
+index 1d6232c..b213007 100644
+--- a/source/lib/Gui.ListView.cpp
++++ b/source/lib/Gui.ListView.cpp
+@@ -17,6 +17,9 @@ GNU General Public License for more details.
+ #include "stdafx.h"
+ #include "script.h"
+ 
++#ifdef CONFIG_GUI
++#ifdef CONFIG_GUI_ADV
++
+ 
+ 
+ #define CTRL_THROW_IF_DESTROYED if (!hwnd) return ControlDestroyedError()
+@@ -756,3 +759,5 @@ FResult GuiControlType::LV_SetImageList(UINT_PTR aImageListID, optl<int> aIconTy
+ 	aRetVal = (UINT_PTR)ListView_SetImageList(hwnd, himl, list_type);
+ 	return OK;
+ }
++#endif // CONFIG_GUI_ADV
++#endif // CONFIG_GUI
+\ No newline at end of file
+diff --git a/source/lib/Gui.StatusBar.cpp b/source/lib/Gui.StatusBar.cpp
+index 4e91034..cced0d8 100644
+--- a/source/lib/Gui.StatusBar.cpp
++++ b/source/lib/Gui.StatusBar.cpp
+@@ -17,6 +17,9 @@ GNU General Public License for more details.
+ #include "stdafx.h"
+ #include "script.h"
+ 
++#ifdef CONFIG_GUI
++#ifdef CONFIG_GUI_ADV
++
+ 
+ 
+ FResult GuiControlType::SB_SetIcon(StrArg aFilename, optl<int> aIconNumber, optl<UINT> aPartNumber, UINT_PTR &aRetVal)
+@@ -107,3 +110,5 @@ FResult GuiControlType::SB_SetText(StrArg aNewText, optl<UINT> aPartNumber, optl
+ }
+ 
+ 
++#endif // CONFIG_GUI_ADV
++#endif // CONFIG_GUI
+\ No newline at end of file
+diff --git a/source/lib/Gui.TreeView.cpp b/source/lib/Gui.TreeView.cpp
+index 8b5bbc4..0a2cdbb 100644
+--- a/source/lib/Gui.TreeView.cpp
++++ b/source/lib/Gui.TreeView.cpp
+@@ -18,6 +18,9 @@ GNU General Public License for more details.
+ #include "script.h"
+ #include "script_func_impl.h"
+ 
++#ifdef CONFIG_GUI
++#ifdef CONFIG_GUI_ADV
++
+ 
+ 
+ #define CTRL_THROW_IF_DESTROYED if (!hwnd) return ControlDestroyedError()
+@@ -479,3 +482,5 @@ FResult GuiControlType::TV_SetImageList(UINT_PTR aImageListID, optl<int> aIconTy
+ 	aRetVal = (UINT_PTR)TreeView_SetImageList(hwnd, himl, list_type);
+ 	return OK;
+ }
++#endif // CONFIG_GUI_ADV
++#endif // CONFIG_GUI
+\ No newline at end of file
+diff --git a/source/lib/functions.h b/source/lib/functions.h
+index db0d041..34688a6 100644
+--- a/source/lib/functions.h
++++ b/source/lib/functions.h
+@@ -63,8 +63,11 @@ md_func_v(DirExist, (In, String, Pattern), (Ret, String, RetVal))
+ md_func(DirMove, (In, String, Source), (In, String, Dest), (In_Opt, String, Flag))
+ md_func(DirSelect, (In_Opt, String, StartingFolder), (In_Opt, Int32, Options), (In_Opt, String, Prompt), (Ret, String, RetVal))
+ 
++#ifdef CONFIG_NETWORK
+ md_func(Download, (In, String, URL), (In, String, Path))
++#endif
+ 
++#ifdef CONFIG_DRIVE
+ md_func(DriveEject, (In_Opt, String, Drive))
+ md_func(DriveGetCapacity, (In, String, Path), (Ret, Int64, RetVal))
+ md_func(DriveGetFilesystem, (In, String, Drive), (Ret, String, RetVal))
+@@ -79,6 +82,7 @@ md_func(DriveLock, (In, String, Drive))
+ md_func(DriveRetract, (In_Opt, String, Drive))
+ md_func(DriveSetLabel, (In, String, Drive), (In_Opt, String, Label))
+ md_func(DriveUnlock, (In, String, Drive))
++#endif
+ 
+ md_func_v(Edit, md_arg_none)
+ 
+@@ -129,8 +133,10 @@ md_func(GroupAdd, (In, String, GroupName), (In_Opt, String, WinTitle), (In_Opt,
+ md_func(GroupClose, (In, String, GroupName), (In_Opt, String, Mode))
+ md_func(GroupDeactivate, (In, String, GroupName), (In_Opt, String, Mode))
+ 
++#ifdef CONFIG_GUI
+ md_func_v(GuiCtrlFromHwnd, (In, UInt32, Hwnd), (Ret, Object, Gui))
+ md_func_v(GuiFromHwnd, (In, UInt32, Hwnd), (In_Opt, Bool32, Recurse), (Ret, Object, Gui))
++#endif
+ 
+ md_func(HotIf, (In_Opt, Variant, Criterion))
+ md_func(HotIfWinActive, (In_Opt, String, WinTitle), (In_Opt, String, WinText))
+@@ -144,7 +150,9 @@ md_func(IL_Add, (In, UIntPtr, ImageList), (In, String, Filename), (In_Opt, Int32
+ md_func_x(IL_Create, IL_Create, UIntPtr, (In_Opt, Int32, InitialCount), (In_Opt, Int32, GrowCount), (In_Opt, Bool32, LargeIcons))
+ md_func_x(IL_Destroy, IL_Destroy, Bool32, (In, UIntPtr, ImageList))
+ 
++#ifdef CONFIG_IMAGE
+ md_func(ImageSearch, (Out, Variant, X), (Out, Variant, Y), (In, Int32, X1), (In, Int32, Y1), (In, Int32, X2), (In, Int32, Y2), (In, String, Image), (Ret, Bool32, Found))
++#endif
+ 
+ md_func(IniDelete, (In, String, Path), (In, String, Section), (In_Opt, String, Key))
+ md_func(IniRead, (In, String, Path), (In_Opt, String, Section), (In_Opt, String, Key), (In_Opt, String, Default), (Ret, String, RetVal))
+@@ -212,12 +220,15 @@ md_func(Pause, (In_Opt, Int32, NewState))
+ 
+ md_func_v(Persistent, (In_Opt, Bool32, NewValue), (Ret, Bool32, OldValue))
+ 
++#ifdef CONFIG_IMAGE
+ md_func(PixelGetColor, (In, Int32, X), (In, Int32, Y), (In_Opt, String, Mode), (Ret, String, Color))
+ md_func(PixelSearch, (Ret, Bool32, Found), (Out, Variant, X), (Out, Variant, Y), (In, Int32, X1), (In, Int32, Y1), (In, Int32, X2), (In, Int32, Y2), (In, UInt32, Color), (In_Opt, Int32, Variation))
++#endif
+ 
+ #undef PostMessage
+ md_func_x(PostMessage, ScriptPostMessage, FResult, (In, UInt32, Msg), (In_Opt, Variant, wParam), (In_Opt, Variant, lParam), MD_CONTROL_ARGS_OPT)
+ 
++#ifdef CONFIG_PROCESS
+ md_func(ProcessClose, (In, String, Process), (Ret, UInt32, ClosedPID))
+ md_func_x(ProcessExist, ProcessExist, UInt32, (In_Opt, String, Process))
+ md_func(ProcessGetName, (In_Opt, String, Process), (Ret, String, Name))
+@@ -226,11 +237,14 @@ md_func(ProcessGetPath, (In_Opt, String, Process), (Ret, String, Path))
+ md_func(ProcessSetPriority, (In, String, Priority), (In_Opt, String, Process), (Ret, UInt32, FoundPID))
+ md_func(ProcessWait, (In, String, Process), (In_Opt, Float64, Timeout), (Ret, UInt32, FoundPID))
+ md_func(ProcessWaitClose, (In, String, Process), (In_Opt, Float64, Timeout), (Ret, UInt32, UnclosedPID))
++#endif
+ 
+ md_func(Reload, md_arg_none)
+ 
++#ifdef CONFIG_RUN
+ md_func(Run, (In, String, Target), (In_Opt, String, WorkingDir), (In_Opt, String, Options), (Out_Opt, Variant, PID))
+ md_func_v(RunAs, (In_Opt, String, User), (In_Opt, String, Password), (In_Opt, String, Domain))
++#endif
+ 
+ md_func_v(Send, (In, String, Keys))
+ md_func_v(SendEvent, (In, String, Keys))
+@@ -250,7 +264,9 @@ md_func(SetDefaultMouseSpeed, (In, Int32, Speed), (Ret, Int32, RetVal))
+ md_func(SetKeyDelay, (In_Opt, Int32, Delay), (In_Opt, Int32, Duration), (In_Opt, String, Mode))
+ md_func(SetMouseDelay, (In, Int32, Delay), (In_Opt, String, Mode), (Ret, Int32, RetVal))
+ md_func(SetNumLockState, (In_Opt, String, State))
++#ifdef CONFIG_REGISTRY
+ md_func(SetRegView, (In, String, RegView), (Ret, Variant, RetVal))
++#endif
+ md_func(SetScrollLockState, (In_Opt, String, State))
+ md_func_v(SetStoreCapsLockMode, (In, Bool32, Mode), (Ret, Bool32, RetVal))
+ 
+@@ -264,8 +280,10 @@ md_func(Shutdown, (In, Int32, Flags))
+ 
+ md_func_x(Sleep, ScriptSleep, Void, (In, Int32, Delay))
+ 
++#ifdef CONFIG_SOUND
+ md_func_v(SoundBeep, (In_Opt, Int32, Duration), (In_Opt, Int32, Frequency))
+ md_func(SoundPlay, (In, String, Path), (In_Opt, String, Wait))
++#endif
+ 
+ md_func(StatusBarGetText, (In_Opt, Int32, Part), MD_WINTITLE_ARGS, (Ret, String, RetVal))
+ md_func(StatusBarWait, (In_Opt, String, Text), (In_Opt, Float64, Timeout), (In_Opt, Int32, Part), (In_Opt, Variant, WinTitle), (In_Opt, String, WinText), (In_Opt, Int32, Interval), (In_Opt, String, ExcludeTitle), (In_Opt, String, ExcludeText), (Ret, Bool32, RetVal))
+@@ -275,7 +293,9 @@ md_func(StrSplit, (In, String, String), (In_Opt, Variant, Delimiters), (In_Opt,
+ md_func(Suspend, (In_Opt, Int32, Mode))
+ 
+ md_func_x(SysGet, SysGet, Int32, (In, Int32, Index))
++#ifdef CONFIG_NETWORK
+ md_func(SysGetIPAddresses, (Ret, Object, RetVal))
++#endif
+ 
+ md_func(Thread, (In, String, Command), (In_Opt, Int32, Value1), (In_Opt, Int32, Value2))
+ 
+diff --git a/source/lib/regex.cpp b/source/lib/regex.cpp
+index 48fef79..8a11e93 100644
+--- a/source/lib/regex.cpp
++++ b/source/lib/regex.cpp
+@@ -23,6 +23,8 @@ GNU General Public License for more details.
+ 
+ #include "script_func_impl.h"
+ 
++#ifdef CONFIG_REGEX
++
+ 
+ 
+ ResultType RegExCreateMatchArray(LPCTSTR haystack, pcret *re, pcret_extra *extra, int *offset, int pattern_count, int captured_pattern_count, IObject *&match_object)
+@@ -1202,3 +1204,13 @@ BIF_DECL(BIF_RegEx)
+ 	else // Out-of-memory or there were no captured patterns.
+ 		output_var->Assign();
+ }
++
++#else // !CONFIG_REGEX
++
++// Used by window matching.  Unreachable in practice since ConvertTitleMatchMode() rejects "RegEx".
++LPCTSTR RegExMatch(LPCTSTR aHaystack, LPCTSTR aNeedleRegEx)
++{
++	return NULL;
++}
++
++#endif // CONFIG_REGEX
+diff --git a/source/lib_pcre/pcre/config.h b/source/lib_pcre/pcre/config.h
+index 44dc805..1176d56 100644
+--- a/source/lib_pcre/pcre/config.h
++++ b/source/lib_pcre/pcre/config.h
+@@ -326,7 +326,9 @@ set the limit at 16000 recursions. A 64Mb stack, on the other hand, can support
+ #define SUPPORT_PCRE16
+ 
+ /* Define to enable support for Unicode properties */
++#ifndef NO_UCP /* AutoHotkey builder: NO_UCP drops the ~60 KB Unicode property tables. */
+ #define SUPPORT_UCP
++#endif
+ 
+ 
+ /* Define to enable support for the UTF-8/16 Unicode encoding. This will work
+diff --git a/source/script.cpp b/source/script.cpp
+index 288b245..d2ea258 100644
+--- a/source/script.cpp
++++ b/source/script.cpp
+@@ -40,6 +40,7 @@ FuncEntry g_BIF[] =
+ 	BIFn(Ceil, 1, 1, BIF_FloorCeil),
+ 	BIF1(Chr, 1, 1),
+ 	BIF1(Click, 0, 6),
++#ifdef CONFIG_COM
+ #ifdef ENABLE_DLLCALL
+ 	BIFn(ComCall, 2, NA, BIF_DllCall),
+ #endif
+@@ -51,6 +52,7 @@ FuncEntry g_BIF[] =
+ 	BIF1(ComObjQuery, 2, 3),
+ 	BIF1(ComObjType, 1, 2),
+ 	BIF1(ComObjValue, 1, 1),
++#endif
+ 	BIF1(Cos, 1, 1),
+ #ifdef ENABLE_DLLCALL
+ 	BIFn(DllCall, 1, NA, BIF_DllCall),
+@@ -102,24 +104,34 @@ FuncEntry g_BIF[] =
+ 	BIFn(ObjSetCapacity, 2, 2, BIF_ObjXXX),
+ 	BIF1(Ord, 1, 1),
+ 	BIF1(Random, 0, 2),
++#ifdef CONFIG_REGISTRY
+ 	BIFn(RegCreateKey, 0, 1, BIF_Reg),
+ 	BIFn(RegDelete, 0, 2, BIF_Reg),
+ 	BIFn(RegDeleteKey, 0, 1, BIF_Reg),
++#endif
++#ifdef CONFIG_REGEX
+ 	BIFn(RegExMatch, 2, 4, BIF_RegEx, {3}),
+ 	BIFn(RegExReplace, 2, 6, BIF_RegEx, {4}),
++#endif
++#ifdef CONFIG_REGISTRY
+ 	BIFn(RegRead, 0, 3, BIF_Reg),
+ 	BIFn(RegWrite, 0, 4, BIF_Reg),
++#endif
+ 	BIF1(Round, 1, 2),
+ 	BIFn(RTrim, 1, 2, BIF_Trim),
++#ifdef CONFIG_RUN
+ 	BIF1(RunWait, 1, 4, {4}),
++#endif
+ 	BIF1(Sin, 1, 1),
+ 	BIF1(Sort, 1, 3),
++#ifdef CONFIG_SOUND
+ 	BIFn(SoundGetInterface, 1, 3, BIF_Sound),
+ 	BIFn(SoundGetMute, 0, 2, BIF_Sound),
+ 	BIFn(SoundGetName, 0, 2, BIF_Sound),
+ 	BIFn(SoundGetVolume, 0, 2, BIF_Sound),
+ 	BIFn(SoundSetMute, 1, 3, BIF_Sound),
+ 	BIFn(SoundSetVolume, 1, 3, BIF_Sound),
++#endif
+ 	BIF1(SplitPath, 1, 6, {2, 3, 4, 5, 6}),
+ 	BIFn(Sqrt, 1, 1, BIF_SqrtLogLn),
+ 	BIF1(StrCompare, 2, 3),
+@@ -397,12 +409,14 @@ Script::~Script() // Destructor.
+ 	// This is because one GUI window might get destroyed and take with it a menu bar that is still
+ 	// in use by an existing GUI window.  GuiType::Destroy() adheres to this philosophy by detaching
+ 	// its menu bar prior to destroying its window.
++#ifdef CONFIG_GUI
+ 	GuiType* gui;
+ 	while (gui = g_firstGui) // Destroy any remaining GUI windows (due to e.g. circular references). Also: assignment.
+ 		gui->Destroy();
+ 	for (i = 0; i < GuiType::sFontCount; ++i) // Now that GUI windows are gone, delete all GUI fonts.
+ 		if (GuiType::sFont[i].hfont)
+ 			DeleteObject(GuiType::sFont[i].hfont);
++#endif
+ 	// The above might attempt to delete an HFONT from GetStockObject(DEFAULT_GUI_FONT), etc.
+ 	// But that should be harmless:
+ 	// MSDN: "It is not necessary (but it is not harmful) to delete stock objects by calling DeleteObject."
+@@ -831,6 +845,19 @@ bif_impl FResult TraySetIcon(optl<StrArg> aIconFile, optl<int> aIconNumber, optl
+ 		, aFreeze.has_value() ? aFreeze.value() ? TOGGLED_ON : TOGGLED_OFF : NEUTRAL) ? OK : FR_FAIL;
+ }
+ 
++#ifdef CONFIG_GUI
++#define DestroyTrayIconsIfUnused GuiType::DestroyIconsIfUnused
++#else
++static void DestroyTrayIconsIfUnused(HICON ahIcon, HICON ahIconSmall)
++{
++	if (!ahIcon) // No Gui windows can be sharing the icon, so just destroy it.
++		return;
++	DestroyIcon(ahIcon);
++	if (ahIconSmall != ahIcon)
++		DestroyIcon(ahIconSmall);
++}
++#endif
++
+ ResultType Script::SetTrayIcon(LPCTSTR aIconFile, int aIconNumber, ToggleValueType aFreezeIcon)
+ {
+ 	bool force_update = false;
+@@ -848,7 +875,7 @@ ResultType Script::SetTrayIcon(LPCTSTR aIconFile, int aIconNumber, ToggleValueTy
+ 	{
+ 		if (mCustomIcon)
+ 		{
+-			GuiType::DestroyIconsIfUnused(mCustomIcon, mCustomIconSmall); // v1.0.37.07: Solves reports of Gui windows losing their icons.
++			DestroyTrayIconsIfUnused(mCustomIcon, mCustomIconSmall); // v1.0.37.07: Solves reports of Gui windows losing their icons.
+ 			// If the above doesn't destroy the icon, the GUI window(s) still using it are responsible for
+ 			// destroying it later.
+ 			mCustomIcon = NULL;  // To indicate that there is no custom icon.
+@@ -903,7 +930,7 @@ ResultType Script::SetTrayIcon(LPCTSTR aIconFile, int aIconNumber, ToggleValueTy
+ 	if ( !new_icon )
+ 		return g_script.RuntimeError(ERR_LOAD_ICON, aIconFile);
+ 
+-	GuiType::DestroyIconsIfUnused(mCustomIcon, mCustomIconSmall); // This destroys it if non-NULL and it's not used by an GUI windows.
++	DestroyTrayIconsIfUnused(mCustomIcon, mCustomIconSmall); // This destroys it if non-NULL and it's not used by an GUI windows.
+ 
+ 	mCustomIcon = new_icon;
+ 	mCustomIconSmall = new_icon_small;
+@@ -1043,9 +1070,11 @@ bool Script::IsPersistent()
+ 	//     right-clicks on the tray icon and showing some other menu, but replicating the Pause/Suspend
+ 	//     checkmarks and AddStandard() behaviour is surprisingly complicated.  By contrast, calling
+ 	//     Persistent() before/after adding the custom items is trivial.
++#ifdef CONFIG_GUI
+ 	for (GuiType* gui = g_firstGui; gui; gui = gui->mNextGui)
+ 		if (IsWindowVisible(gui->mHwnd)) // A GUI is visible.
+ 			return true;
++#endif
+ 	// Otherwise, none of the above conditions are true; but there might still be
+ 	// one or more script threads running.  Caller is responsible for checking that.
+ 	return false;
+@@ -4628,7 +4657,14 @@ ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType,
+ 			if (!_tcsicmp(_T("Files"), action_args))
+ 				aActionType = ACT_LOOP_FILE;
+ 			else if (!_tcsicmp(_T("Reg"), action_args))
++#ifdef CONFIG_REGISTRY
+ 				aActionType = ACT_LOOP_REG;
++#else
++			{
++				*cp = orig_char;
++				return ScriptError(_T("Loop Reg is not available in this build (registry support was removed)."), action_args);
++			}
++#endif
+ 			else if (!_tcsicmp(_T("Read"), action_args))
+ 				aActionType = ACT_LOOP_READ;
+ 			else if (!_tcsicmp(_T("Parse"), action_args))
+@@ -8186,11 +8222,15 @@ ResultType Line::ExpressionToPostfix(ArgStruct &aArg, ExprTokenType *&aInfix)
+ 				case '~':
+ 					if (cp1 == '=')
+ 					{
++#ifndef CONFIG_REGEX
++						return LineError(_T("The ~= operator is not available in this build (RegEx support was removed)."), FAIL, cp);
++#else
+ 						++cp;
+ 						this_infix_item.callsite = new CallSite();
+ 						this_infix_item.callsite->func = ExprOp<BIF_RegEx, FID_RegExMatch>();
+ 						this_infix_item.callsite->param_count = 2;
+ 						this_infix_item.symbol = SYM_REGEXMATCH;
++#endif
+ 					}
+ 					else
+ 					// If what lies to its left is a CPARAN or OPERAND, SYM_CONCAT is not auto-inserted because:
+@@ -9432,6 +9472,7 @@ ResultType Line::FinalizeExpression(ArgStruct &aArg)
+ 					}
+ 				}
+ 
++#ifdef ENABLE_DLLCALL
+ 				if (bif == &BIF_DllCall && param_count)
+ 				{
+ 					if (param[0]->symbol == SYM_STRING)
+@@ -9440,6 +9481,7 @@ ResultType Line::FinalizeExpression(ArgStruct &aArg)
+ 							param[0]->SetValue((__int64)function);
+ 					}
+ 				}
++#endif
+ 			}
+ 			stack[stack_count++] = this_postfix;
+ 		} // SYM_FUNC
+@@ -9928,6 +9970,7 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line
+ 				result = line->PerformLoopFilePattern(aResultToken, jump_to_line, until
+ 					, (file_loop_mode & ~FILE_LOOP_RECURSE), (file_loop_mode & FILE_LOOP_RECURSE), ARG1);
+ 				break;
++#ifdef CONFIG_REGISTRY
+ 			case ACT_LOOP_REG:
+ 				// This isn't the most efficient way to do things (e.g. the repeated calls to
+ 				// RegConvertRootKey()), but it the simplest way for now.  Optimization can
+@@ -9948,6 +9991,7 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line
+ 					// failed earlier rather than here).
+ 					result = g_script.Win32Error();
+ 				break;
++#endif
+ 			}
+ 
+ 			// RESTORE THE PREVIOUS A_LOOPXXX VARIABLES.  If there isn't an outer loop, this will set them
+diff --git a/source/script.h b/source/script.h
+index 2b2cb3c..8f2fb30 100644
+--- a/source/script.h
++++ b/source/script.h
+@@ -1003,7 +1003,9 @@ public:
+ 		if (*aBuf == '1' && !*(aBuf + 1)) return FIND_IN_LEADING_PART;
+ 		if (*aBuf == '2' && !*(aBuf + 1)) return FIND_ANYWHERE;
+ 		if (*aBuf == '3' && !*(aBuf + 1)) return FIND_EXACT;
++#ifdef CONFIG_REGEX
+ 		if (!_tcsicmp(aBuf, _T("RegEx"))) return FIND_REGEX; // Goes with the above, not fast/slow below.
++#endif
+ 
+ 		if (!_tcsicmp(aBuf, _T("Fast"))) return FIND_FAST;
+ 		if (!_tcsicmp(aBuf, _T("Slow"))) return FIND_SLOW;
+diff --git a/source/script_com.cpp b/source/script_com.cpp
+index 47ad1c3..f4a7294 100644
+--- a/source/script_com.cpp
++++ b/source/script_com.cpp
+@@ -6,6 +6,7 @@
+ #include "script_func_impl.h"
+ #include <DispEx.h>
+ 
++#ifdef CONFIG_COM
+ 
+ // IID__IObject -- .NET's System.Object:
+ const IID IID__Object = {0x65074F7F, 0x63C0, 0x304E, 0xAF, 0x0A, 0xD5, 0x17, 0x41, 0xCB, 0x4A, 0x8D};
+@@ -2008,3 +2009,43 @@ void ComObject::DebugWriteProperty(IDebugProperties *aDebugger, int aPage, int a
+ }
+ 
+ #endif
++
++#else // !CONFIG_COM
++
++// Every script object derives from IObjectComCompatible, so these must still exist.
++// Minimal versions: objects remain valid IUnknowns but expose no IDispatch behaviour.
++STDMETHODIMP IObjectComCompatible::QueryInterface(REFIID riid, void **ppv)
++{
++	if (riid == IID_IUnknown)
++	{
++		AddRef();
++		*ppv = this;
++		return S_OK;
++	}
++	*ppv = NULL;
++	return E_NOINTERFACE;
++}
++
++STDMETHODIMP IObjectComCompatible::GetTypeInfoCount(UINT *pctinfo)
++{
++	*pctinfo = 0;
++	return S_OK;
++}
++
++STDMETHODIMP IObjectComCompatible::GetTypeInfo(UINT itinfo, LCID lcid, ITypeInfo **pptinfo)
++{
++	*pptinfo = NULL;
++	return E_NOTIMPL;
++}
++
++STDMETHODIMP IObjectComCompatible::GetIDsOfNames(REFIID riid, LPOLESTR *rgszNames, UINT cNames, LCID lcid, DISPID *rgDispId)
++{
++	return E_NOTIMPL;
++}
++
++STDMETHODIMP IObjectComCompatible::Invoke(DISPID dispIdMember, REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS *pDispParams, VARIANT *pVarResult, EXCEPINFO *pExcepInfo, UINT *puArgErr)
++{
++	return E_NOTIMPL;
++}
++
++#endif // CONFIG_COM
+diff --git a/source/script_gui.cpp b/source/script_gui.cpp
+index 1da1109..8762f2a 100644
+--- a/source/script_gui.cpp
++++ b/source/script_gui.cpp
+@@ -24,6 +24,8 @@ GNU General Public License for more details.
+ #include "qmath.h" // for qmathLog()
+ #include "script_func_impl.h"
+ 
++#ifdef CONFIG_GUI
++
+ 
+ // Gui methods use this macro either if they require the Gui to have a window,
+ // or if they aren't safe to use after Dispose() is called.
+@@ -47,7 +49,17 @@ GuiControls GuiControlType::ConvertTypeName(LPCTSTR aTypeName)
+ {
+ 	for (int i = 1; i < _countof(sTypeNames); ++i) // Start at 1 because 0 is GUI_CONTROL_INVALID.
+ 		if (!_tcsicmp(aTypeName, sTypeNames[i]))
++		{
++#ifndef CONFIG_GUI_ACTIVEX
++			if (i == GUI_CONTROL_ACTIVEX) // ActiveX stripped (or COM absent).
++				break;
++#endif
++#ifndef CONFIG_GUI_ADV
++			if (i == GUI_CONTROL_LISTVIEW || i == GUI_CONTROL_TREEVIEW || i == GUI_CONTROL_STATUSBAR)
++				break; // Advanced controls stripped from this build.
++#endif
+ 			return (GuiControls)i;
++		}
+ 	if (!_tcsicmp(aTypeName, _T("DropDownList"))) return GUI_CONTROL_DROPDOWNLIST;
+ 	if (!_tcsicmp(aTypeName, _T("Picture"))) return GUI_CONTROL_PIC;
+ 	return GUI_CONTROL_INVALID;
+@@ -205,7 +217,9 @@ ObjectMemberMd GuiType::sMembers[] =
+ 	md_member(GuiType, __New, CALL, (In_Opt, String, Options), (In_Opt, String, Title), (In_Opt, Object, EventObj)),
+ 	
+ 	md_member(GuiType, Add, CALL, (In, String, ControlType), (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
++#ifdef CONFIG_GUI_ACTIVEX
+ 	md_member(GuiType, AddActiveX, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
++#endif
+ 	md_member(GuiType, AddButton, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+ 	md_member(GuiType, AddCheckBox, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+ 	md_member(GuiType, AddComboBox, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+@@ -590,6 +604,7 @@ ObjectMemberMd GuiControlType::sMembersDate[] =
+ #define FUN1(name, minp, maxp, bif) Object_Member(name, bif, 0, IT_CALL, minp, maxp)
+ #define FUNn(name, minp, maxp, bif, cat) Object_Member(name, bif, FID_##cat##_##name, IT_CALL, minp, maxp)
+ 
++#ifdef CONFIG_GUI_ADV
+ ObjectMemberMd GuiControlType::sMembersLV[] =
+ {
+ 	md_member_x(GuiControlType, GetNext, LV_GetNext, CALL, (In_Opt, Int32, StartIndex), (In_Opt, String, RowType), (Ret, Int32, RetVal)),
+@@ -627,6 +642,7 @@ ObjectMemberMd GuiControlType::sMembersSB[] =
+ 	md_member_x(GuiControlType, SetParts, SB_SetParts, CALL, (In, Params, Filename), (Ret, UInt32, RetVal)),
+ 	md_member_x(GuiControlType, SetText, SB_SetText, CALL, (In, String, NewText), (In_Opt, UInt32, PartNumber), (In_Opt, UInt32, Style))
+ };
++#endif // CONFIG_GUI_ADV
+ 
+ #undef FUN1
+ #undef FUNn
+@@ -652,6 +668,14 @@ void GuiControlType::DefineControlClasses()
+ 	{
+ 		if (i == GUI_CONTROL_TAB2 || i == GUI_CONTROL_TAB3)
+ 			continue;
++#ifndef CONFIG_GUI_ACTIVEX
++		if (i == GUI_CONTROL_ACTIVEX)
++			continue;
++#endif
++#ifndef CONFIG_GUI_ADV
++		if (i == GUI_CONTROL_LISTVIEW || i == GUI_CONTROL_TREEVIEW || i == GUI_CONTROL_STATUSBAR)
++			continue; // Advanced controls stripped from this build.
++#endif
+ 
+ 		// Determine base prototype and control-type-specific members.
+ 		Object *base_proto = sPrototype, *base_class = ctrl_class;
+@@ -664,9 +688,11 @@ void GuiControlType::DefineControlClasses()
+ 		case GUI_CONTROL_COMBOBOX:
+ 		case GUI_CONTROL_LISTBOX: base_proto = sPrototypeList; base_class = list_class; break;
+ 		case GUI_CONTROL_DATETIME: more_items = sMembersDate; how_many = _countof(sMembersDate); break;
++#ifdef CONFIG_GUI_ADV
+ 		case GUI_CONTROL_LISTVIEW: more_items = sMembersLV; how_many = _countof(sMembersLV); break;
+ 		case GUI_CONTROL_TREEVIEW: more_items = sMembersTV; how_many = _countof(sMembersTV); break;
+ 		case GUI_CONTROL_STATUSBAR: more_items = sMembersSB; how_many = _countof(sMembersSB); break;
++#endif
+ 		}
+ 		TCHAR buf[32];
+ 		_sntprintf(buf, 32, _T("Gui.%s"), sTypeNames[i]);
+@@ -4570,6 +4596,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPCTSTR aOptions, LPCTS
+ 		break;
+ 		
+ 	case GUI_CONTROL_ACTIVEX:
++#ifdef CONFIG_GUI_ACTIVEX
+ 	{
+ 		static bool sAtlAxInitialized = false;
+ 		if (!sAtlAxInitialized)
+@@ -4602,6 +4629,9 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPCTSTR aOptions, LPCTS
+ 		}
+ 		break;
+ 	}
++#else
++		break; // Unreachable: ConvertTypeName() rejects "ActiveX" without COM support.
++#endif
+ 
+ 	case GUI_CONTROL_CUSTOM:
+ 		if (opt.customClassAtom == 0)
+@@ -11016,3 +11046,4 @@ void GuiType::SetDefaultMargins()
+ 	if (mMarginY == COORD_UNSPECIFIED)
+ 		mMarginY = MulDiv(sFont[mCurrentFontIndex].lfHeight, -54, 96); // Also seems good.  Originally 0.75 * point_size.
+ }
++#endif // CONFIG_GUI
+diff --git a/source/script_menu.cpp b/source/script_menu.cpp
+index 6351bb3..9eb9bab 100644
+--- a/source/script_menu.cpp
++++ b/source/script_menu.cpp
+@@ -506,9 +506,13 @@ UserMenuItem *UserMenu::FindItemByID(UINT aID)
+ // Macros for use with the below methods (in previous versions, submenus were identified by position):
+ #define aMenuItem_ID		aMenuItem->mMenuID
+ #define aMenuItem_MF_BY		MF_BYCOMMAND
++#ifdef CONFIG_GUI
+ #define UPDATE_GUI_MENU_BARS(menu_type, hmenu) \
+ 	if (menu_type == MENU_TYPE_BAR && g_firstGui)\
+ 		GuiType::UpdateMenuBars(hmenu); // Above: If it's not a popup, it's probably a menu bar.
++#else
++#define UPDATE_GUI_MENU_BARS(menu_type, hmenu) ((void)0); // Some callers omit the semicolon.
++#endif
+ 
+ 
+ 
+@@ -1303,6 +1307,7 @@ void UserMenu::UpdateAccelerators()
+ 
+ 	if (mMenuType == MENU_TYPE_BAR)
+ 	{
++#ifdef CONFIG_GUI
+ 		for (GuiType* gui = g_firstGui; gui; gui = gui->mNextGui)
+ 			if (GetMenu(gui->mHwnd) == mMenu)
+ 			{
+@@ -1310,6 +1315,7 @@ void UserMenu::UpdateAccelerators()
+ 				// Continue in case there are other GUIs using this menu.
+ 				//break;
+ 			}
++#endif
+ 	}
+ 	else
+ 	{
+diff --git a/source/script_object.cpp b/source/script_object.cpp
+index c0ee5cf..8d3d5c2 100644
+--- a/source/script_object.cpp
++++ b/source/script_object.cpp
+@@ -3004,6 +3004,7 @@ ObjectMember Func::sMembers[] =
+ 
+ 
+ 
++#ifdef CONFIG_REGEX
+ ObjectMember RegExMatchObject::sMembers[] =
+ {
+ 	Object_Method(__Enum, 0, 1),
+@@ -3018,6 +3019,7 @@ ObjectMember RegExMatchObject::sMembers[] =
+ 	Object_Method(Pos, 0, 1),
+ 	Object_Member(Pos, Invoke, M_Pos, IT_GET, 0, 1),
+ };
++#endif
+ 
+ 
+ 
+@@ -3125,8 +3127,10 @@ void Object::CreateRootPrototypes()
+ 			{_T("Closure"), &Closure::sPrototype},
+ 			{_T("Enumerator"), &EnumBase::sPrototype}
+ 		}},
++#ifdef CONFIG_GUI
+ 		{_T("Gui"), &GuiType::sPrototype, NewObject<GuiType>
+ 			, GuiType::sMembers, GuiType::sMemberCount},
++#endif
+ 		{_T("InputHook"), &InputObject::sPrototype, NewObject<InputObject>
+ 			, InputObject::sMembers, InputObject::sMemberCount},
+ 		{_T("Map"), &Map::sPrototype, NewObject<Map>
+@@ -3135,8 +3139,10 @@ void Object::CreateRootPrototypes()
+ 			, UserMenu::sMembers, UserMenu::sMemberCount, {
+ 			{_T("MenuBar"), &UserMenu::sBarPrototype, NewObject<UserMenu::Bar>}
+ 		}},
++#ifdef CONFIG_REGEX
+ 		{_T("RegExMatchInfo"), &RegExMatchObject::sPrototype, no_ctor
+ 			, RegExMatchObject::sMembers, _countof(RegExMatchObject::sMembers)}
++#endif
+ 	});
+ 
+ 	// Parameter counts are specified for static Call in the following classes
+@@ -3146,11 +3152,13 @@ void Object::CreateRootPrototypes()
+ 	// validate aParamCount in each function, which reduces code size.
+ 	// Note that the `this` parameter (the class itself) is counted.
+ 	DefineClasses(anyClass, sAnyPrototype, {
++#ifdef CONFIG_COM
+ 		{_T("ComValue"), &sComValuePrototype, {ComValue_Call, 3, 4}, no_members, 0, {
+ 			{_T("ComObjArray"), &sComArrayPrototype, {ComObjArray_Call, 3, 10}},
+ 			{_T("ComObject"), &sComObjectPrototype, {ComObject_Call, 2, 3}},
+ 			{_T("ComValueRef"), &sComRefPrototype}
+ 		}},
++#endif
+ 		{_T("Primitive"), &Object::sPrimitivePrototype, no_ctor, no_members, 0, {
+ 			{_T("Number"), &Object::sNumberPrototype, {BIF_Number, 2, 2}, no_members, 0, {
+ 				{_T("Float"), &Object::sFloatPrototype, {BIF_Float, 2, 2}},
+@@ -3161,8 +3169,12 @@ void Object::CreateRootPrototypes()
+ 		{_T("VarRef"), &sVarRefPrototype}
+ 	});
+ 
++#ifdef CONFIG_GUI
+ 	GuiControlType::DefineControlClasses();
++#endif
++#ifdef CONFIG_COM
+ 	DefineComPrototypeMembers();
++#endif
+ 	DefineFileClass();
+ 
+ 	// Permit Object.Call to construct Error objects.
+diff --git a/source/window.cpp b/source/window.cpp
+index b4917d4..f791910 100644
+--- a/source/window.cpp
++++ b/source/window.cpp
+@@ -546,7 +546,11 @@ HWND GetValidLastUsedWindow(global_struct &aSettings)
+ 	// Otherwise, DetectHiddenWindows is OFF and the window is not visible.  Return NULL
+ 	// unless this is a GUI window belonging to this particular script, in which case
+ 	// the setting of DetectHiddenWindows is ignored (as of v1.0.25.13).
++#ifdef CONFIG_GUI
+ 	return GuiType::FindGui(aSettings.hWndLastUsed) ? aSettings.hWndLastUsed : NULL;
++#else
++	return NULL;
++#endif
+ }
+ 
+ 
+
